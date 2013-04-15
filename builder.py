@@ -3,12 +3,46 @@ import sys
 
 __all__ = ["builder", "sequence_builder"]
 
-def builder(*args, **kwargs):
-    ranges = _convertToRanges(args)
+def builder(ranges, **kwargs):
+    r"""Build a regexp from an iterable containing codepoints/ranges
+
+    builder takes an iterable containing either (or a mixture) of
+    codepoints (given either by a number type or as a unicode string) or
+    two-tuples of codepoints, where (x, y) represents a range from U+x to
+    U+y inclusive.
+
+    For example:
+
+    >>> builder([0x61])
+    u'a'
+    >>> builder([(0x61, 0x7A)])
+    u'[a-z]'
+    >>> builder([(0x61, 0x7A), (0x41, 0x5A)])
+    u'[A-Za-z]'
+    >>> builder([(u"a", u"z"), (0x41, 0x5A)])
+    u'[A-Za-z]'
+    >>> builder([(u"a", 0x7A), (0x41, 0x5A)])
+    u'[A-Za-z]'
+    """
+    ranges = _convertToRanges(ranges)
     ranges = _mergeRanges(ranges)
     return _generateRegexp(ranges, **kwargs)
 
-def sequence_builder(s, **kwargs):
+def enumerable_builder(s, **kwargs):
+    r"""Build a regexp from an enumerable iterable based on truthfulness
+
+    `enumerable_builder` takes an iterable and enumerates it (through the
+    built-in enumerate(), hence requirements that places hold) treating
+    the nth value enumerated as U+n and allows it if the value is
+    truthful.
+
+    For example:
+
+    >>> enumerable_builder([False, False, True])
+    u'\\\x02'
+    >>> enumerable_builder([True, True, True, True])
+    u'[\x00-\x03]'
+    """
     ranges = _inferRanges(s)
     return _generateRegexp(ranges, **kwargs)
 
@@ -236,7 +270,7 @@ def _generateRegexpUTF16(ranges):
             nonbmp.append((0x10000, range[1]))
         else:
             nonbmp.append(range)
-    
+
     if bmp:
         segments.append(_generateRegexpUTF32(bmp))
 
@@ -260,7 +294,7 @@ def _generateRegexpUTF16(ranges):
                                 _generateRegexpUTF32([(0xDC00, endlow)]))
 
     if len(segments) > 1 or nonbmp:
-        return u"(?:%s)" % u"|".join(segments)        
+        return u"(?:%s)" % u"|".join(segments)
     elif segments:
         return segments[0]
     else:
