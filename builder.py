@@ -1,7 +1,7 @@
 import re
 import sys
 
-__all__ = ["builder", "sequence_builder"]
+__all__ = ["builder", "enumerable_builder"]
 
 def builder(ranges, **kwargs):
     r"""Build a regexp from an iterable containing codepoints/ranges
@@ -9,7 +9,10 @@ def builder(ranges, **kwargs):
     builder takes an iterable containing either (or a mixture) of
     codepoints (given either by a number type or as a unicode string) or
     two-tuples of codepoints, where (x, y) represents a range from U+x to
-    U+y inclusive.
+    U+y inclusive. There is an optional `force` argument, defaulting to None,
+    which can force "utf16"/"utf32" regexp generation (note, however, that
+    utf32 regexp generation requires a wide build of Python if characters
+    outside of the BMP are used.
 
     For example:
 
@@ -23,6 +26,12 @@ def builder(ranges, **kwargs):
     u'[A-Za-z]'
     >>> builder([(u"a", 0x7A), (0x41, 0x5A)])
     u'[A-Za-z]'
+    >>> builder([0x10000], force=None) # doctest: +SKIP
+    u'\U00010000' if sys.maxunicode == 0x10FFFF else u'\\\ud800\\\udc00'
+    >>> builder([0x10000], force="utf16")
+    u'\\\ud800\\\udc00'
+    >>> builder([0x10000], force="utf32") # doctest: +SKIP
+    u'\U00010000'
     """
     ranges = _convertToRanges(ranges)
     ranges = _mergeRanges(ranges)
@@ -34,7 +43,10 @@ def enumerable_builder(s, **kwargs):
     `enumerable_builder` takes an iterable and enumerates it (through the
     built-in enumerate(), hence requirements that places hold) treating
     the nth value enumerated as U+n and allows it if the value is
-    truthful.
+    truthful. There is an optional `force` argument, defaulting to None,
+    which can force "utf16"/"utf32" regexp generation (note, however, that
+    utf32 regexp generation requires a wide build of Python if characters
+    outside of the BMP are used.
 
     For example:
 
@@ -83,16 +95,42 @@ def _inferRanges(sequence):
     return ranges
 
 def _convertToRanges(inputs):
+    r"""Convert the public ranges syntax to the internal one
+
+    >>> _convertToRanges([])
+    []
+    >>> _convertToRanges([0])
+    [(0, 0)]
+    >>> _convertToRanges([0L])
+    [(0, 0)]
+    >>> _convertToRanges([u'a'])
+    [(97, 97)]
+    >>> _convertToRanges([(0x61, 0x7A)])
+    [(97, 122)]
+    >>> _convertToRanges([(u'a', 0x7A)])
+    [(97, 122)]
+    >>> _convertToRanges([(u'a', u'z')])
+    [(97, 122)]
+    >>> _convertToRanges([complex(0)])
+    Traceback (most recent call last):
+    TypeError: object of type 'complex' has no len()
+    """
     new = []
     for input in inputs:
-        if isinstance(input, (basestring, int)):
+        v = None
+        try:
             v = _convertToCodepoint(input)
+        except (TypeError, ValueError):
+            if isinstance(input, unicode):
+                raise
+
+        if v is not None:
             new.append((v, v))
         elif len(input) == 2:
             new.append((_convertToCodepoint(input[0]),
                         _convertToCodepoint(input[1])))
         else:
-            raise ValueError
+            raise ValueError("Each range must be of length two")
     return new
 
 def _convertToCodepoint(v):
@@ -103,7 +141,7 @@ def _convertToCodepoint(v):
     >>> _convertToCodepoint(0x20)
     32
     >>> _convertToCodepoint(0x20L)
-    32L
+    32
     >>> _convertToCodepoint(u"\u0000")
     0
     >>> _convertToCodepoint(u"\u0020")
@@ -125,11 +163,12 @@ def _convertToCodepoint(v):
             return (((v0 & 0x03FF) << 10) | (v1 & 0x3FF)) + 0x10000
         else:
             raise ValueError("String must be a single character or surrogate pair")
-    elif isinstance(v, (int, long)):
-        assert 0 <= v <= 0x10FFFF
-        return v
     else:
-        raise ValueError
+        v = int(v)
+        if not (0 <= v <= 0x10FFFF):
+            raise ValueError("Integers must represent a Unicode codepoint, "
+                             "%X is out of range!" % v)
+        return v
 
 def _mergeRanges(ranges):
     """Merge overlapping/adjacent ranges
@@ -244,9 +283,9 @@ def _generateRegexpUTF16(ranges):
     >>> _generateRegexpUTF16([(0xFFF0, 0x10010)])
     u'(?:[\ufff0-\uffff]|\\\ud800[\udc00-\udc10])'
     >>> _generateRegexpUTF16([(0x10000, 0x10000)])
-    u'(?:\\\ud800\\\udc00)'
+    u'\\\ud800\\\udc00'
     >>> _generateRegexpUTF16([(0x10000, 0x10010)])
-    u'(?:\\\ud800[\udc00-\udc10])'
+    u'\\\ud800[\udc00-\udc10]'
     >>> _generateRegexpUTF16([(0x10300, 0x104FF)])
     u'(?:\\\ud800[\udf00-\udfff]|\\\ud801[\udc00-\udcff])'
     >>> _generateRegexpUTF16([(0x10300, 0x108FF)])
@@ -256,7 +295,7 @@ def _generateRegexpUTF16(ranges):
     >>> _generateRegexpUTF16([(0x10300, 0x110FF)])
     u'(?:\\\ud800[\udf00-\udfff]|[\ud801\ud802\ud803][\udc00-\udfff]|\\\ud804[\udc00-\udcff])'
     >>> _generateRegexpUTF16([(0x10000, 0x10FFFF)])
-    u'(?:[\ud800-\udbff][\udc00-\udfff])'
+    u'[\ud800-\udbff][\udc00-\udfff]'
     """
     segments = []
 
@@ -293,7 +332,7 @@ def _generateRegexpUTF16(ranges):
                 segments.append(re.escape(unichr(endhigh)) +
                                 _generateRegexpUTF32([(0xDC00, endlow)]))
 
-    if len(segments) > 1 or nonbmp:
+    if len(segments) > 1:
         return u"(?:%s)" % u"|".join(segments)
     elif segments:
         return segments[0]
