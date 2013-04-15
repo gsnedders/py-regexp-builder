@@ -219,6 +219,8 @@ def _generateRegexpUTF16(ranges):
     u'(?:\\\ud800[\udf00-\udfff]|\\\ud801[\udc00-\udfff]|\\\ud802[\udc00-\udcff])'
     >>> _generateRegexpUTF16([(0x10300, 0x10CFF)])
     u'(?:\\\ud800[\udf00-\udfff]|[\ud801\ud802][\udc00-\udfff]|\\\ud803[\udc00-\udcff])'
+    >>> _generateRegexpUTF16([(0x10300, 0x110FF)])
+    u'(?:\\\ud800[\udf00-\udfff]|[\ud801\ud802\ud803][\udc00-\udfff]|\\\ud804[\udc00-\udcff])'
     >>> _generateRegexpUTF16([(0x10000, 0x10FFFF)])
     u'(?:[\ud800-\udbff][\udc00-\udfff])'
     """
@@ -241,16 +243,21 @@ def _generateRegexpUTF16(ranges):
     for range in nonbmp:
         starthigh, startlow = _toSurrogate(range[0])
         endhigh, endlow = _toSurrogate(range[1])
+        midstart, midend = (starthigh + 1 if startlow != 0xDC00 else starthigh,
+                            endhigh - 1 if endlow != 0xDFFF else endhigh)
         if starthigh == endhigh:
             segments.append(re.escape(unichr(starthigh)) +
                             _generateRegexpUTF32([(startlow, endlow)]))
         else:
-            segments.append(re.escape(unichr(starthigh)) +
-                            _generateRegexpUTF32([(startlow, 0xDFFF)]))
-            if starthigh + 1 != endhigh:
-                segments.append(_generateRegexpUTF32([(starthigh + 1, endhigh - 1)]) + u"[\uDC00-\uDFFF]")
-            segments.append(re.escape(unichr(endhigh)) +
-                            _generateRegexpUTF32([(0xDC00, endlow)]))
+            if starthigh != midstart:
+                segments.append(re.escape(unichr(starthigh)) +
+                                _generateRegexpUTF32([(startlow, 0xDFFF)]))
+            if midstart <= midend:
+                segments.append(_generateRegexpUTF32([(midstart, midend)]) +
+                                u"[\uDC00-\uDFFF]")
+            if endhigh != midend:
+                segments.append(re.escape(unichr(endhigh)) +
+                                _generateRegexpUTF32([(0xDC00, endlow)]))
 
     if len(segments) > 1 or nonbmp:
         return u"(?:%s)" % u"|".join(segments)        
